@@ -14,6 +14,8 @@ from config import get_config
 from threading import Thread
 from tmrl.util import partial
 
+import sys
+
 import numpy as np
 
 my_config = get_config()
@@ -25,6 +27,7 @@ password = "A Secure Password"
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
 max_samples_per_episode = 1000
+model_history = 10
 
 weights_folder = cfg.WEIGHTS_FOLDER
 checkpoints_folder = cfg.CHECKPOINTS_FOLDER
@@ -36,7 +39,7 @@ model_path_history = str(weights_folder / (my_run_name + "_"))
 
 # my_worker.run(test_episode_interval=10)
 
-epochs = 10
+epochs = np.inf
 rounds = 10
 steps = 1000
 update_buffer_interval = 100
@@ -54,10 +57,13 @@ def run_trainer(trainer):
     trainer.run()
 
 
-def initialize_vars():
-    my_server = Server(security=security,
-                       password=password,
-                       port=server_port)
+def initialize_vars(server=False):
+
+    my_server = 0
+    if server:
+        my_server = Server(security=security,
+                           password=password,
+                           port=server_port)
 
     env_cls = partial(GenericGymEnv, id="real-time-gym-v1",
                       gym_kwargs={"config": my_config})
@@ -118,11 +124,31 @@ def initialize_vars():
     return my_worker, my_trainer, my_server
 
 
-my_worker, my_trainer, my_server = initialize_vars()
+def start_server():
+    _, _, my_server = initialize_vars(server=True)
+    print("Server started")
 
-daemon_thread_worker = Thread(target=run_worker, args=(
-    my_worker, ), kwargs={}, daemon=True)
 
-daemon_thread_worker.start()
+def start_worker():
+    my_worker, _, _ = initialize_vars()
+    print("Worker started")
+    run_worker(my_worker)
 
-run_trainer(my_trainer)
+
+def start_trainer():
+    _, my_trainer, _ = initialize_vars()
+    print("Trainer started")
+    run_trainer(my_trainer)
+
+
+if __name__ == "__main__":
+
+    # RUN IN THREE CMDS WITH DIFFERENT ARGUMENTS
+
+    match int(sys.argv[1]):
+        case 0:
+            start_server()
+        case 1:
+            start_trainer()
+        case 2:
+            start_worker()
