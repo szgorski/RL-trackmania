@@ -1,3 +1,4 @@
+import numpy as np
 from tmrl.training import TrainingAgent
 from tmrl.custom.utils.nn import copy_shared, no_grad
 from tmrl.util import cached_property
