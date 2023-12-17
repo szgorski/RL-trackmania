@@ -77,7 +77,7 @@ from tmrl.training_offline import TrainingOffline
 from copy import deepcopy
 import numpy as np
 import os
-
+torch.set_default_device('cuda:0')
 
 # Now, let us look into the content of config.json:
 
@@ -114,7 +114,8 @@ update_model_interval = cfg.TMRL_CONFIG["UPDATE_MODEL_INTERVAL"]
 update_buffer_interval = cfg.TMRL_CONFIG["UPDATE_BUFFER_INTERVAL"]
 
 # Training device (e.g., "cuda:0"):
-device_trainer = 'cuda' if cfg.CUDA_TRAINING else 'cpu'
+device_trainer = 'cuda:0'
+# if cfg.CUDA_TRAINING else 'cpu'
 
 # Maximum size of the replay buffer:
 memory_size = cfg.TMRL_CONFIG["MEMORY_SIZE"]
@@ -153,7 +154,7 @@ dataset_path = cfg.DATASET_PATH
 obs_preprocessor = cfg_obj.OBS_PREPROCESSOR
 
 env_cls = cfg_obj.ENV_CLS
-device_worker = 'cpu'
+device_worker = 'cuda:0'
 
 
 window_width = cfg.WINDOW_WIDTH  # must be between 256 and 958
@@ -248,8 +249,25 @@ class SquashedGaussianMLPActor(ActorModule):
         self.act_limit = act_limit
 
     def forward(self, obs, test=False, with_logprob=True):
-        tensors = [torch.from_numpy(obs[0]), torch.from_numpy(obs[1]), torch.from_numpy(
-            obs[2]), torch.from_numpy(obs[3])]
+        if isinstance(obs[0], np.ndarray):
+            tensors = [torch.from_numpy(obs[0]), torch.from_numpy(obs[1]), torch.from_numpy(
+                obs[2]), torch.from_numpy(obs[3])]
+        else:
+            tensors = obs
+        if tensors[1].get_device() != 0:
+            tensors = list(tensors)
+            tensors[0] = tensors[0].to("cuda:0")
+            tensors[1] = tensors[1].to("cuda:0")
+            tensors[2] = tensors[2].to("cuda:0")
+            tensors[3] = tensors[3].to("cuda:0")
+            tensors = tuple(tensors)
+
+        print(tensors[0].get_device())
+        print(tensors[1].get_device())
+
+        print(tensors[2].get_device())
+        print(tensors[3].get_device())
+
         net_out = self.net(torch.cat(tensors, -1))
         mu = self.mu_layer(net_out)
         log_std = self.log_std_layer(net_out)
@@ -286,7 +304,7 @@ class SquashedGaussianMLPActor(ActorModule):
     def act(self, obs, test=False):
         with torch.no_grad():
             a, _ = self.forward(obs, test, False)
-            return a.numpy()
+            return a.cpu().numpy()
 
 
 class MLPQFunction(nn.Module):
@@ -325,32 +343,6 @@ class MLPActorCritic(nn.Module):
             return a.numpy()
 
 
-class TorchJSONEncoder(json.JSONEncoder):
-    """
-    Custom JSON encoder for torch tensors, used in the custom save() method of our ActorModule.
-    """
-
-    def default(self, obj):
-        if isinstance(obj, torch.Tensor):
-            return obj.cpu().detach().numpy().tolist()
-        return json.JSONEncoder.default(self, obj)
-
-
-class TorchJSONDecoder(json.JSONDecoder):
-    """
-    Custom JSON decoder for torch tensors, used in the custom load() method of our ActorModule.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(object_hook=self.object_hook, *args, **kwargs)
-
-    def object_hook(self, dct):
-        for key in dct.keys():
-            if isinstance(dct[key], list):
-                dct[key] = torch.Tensor(dct[key])
-        return dct
-
-
 class SACTrainingAgent(TrainingAgent):
     """
     Our custom training algorithm (SAC in this tutorial).
@@ -376,12 +368,12 @@ class SACTrainingAgent(TrainingAgent):
                  # Gymnasium action space (required argument here for your convenience)
                  action_space=None,
                  # Device our TrainingAgent should use for training (required argument)
-                 device=None,
+                 device="cuda:0",
                  # An actor-critic module, encapsulating our ActorModule
                  model_cls=MLPActorCritic,
                  gamma=0.99,  # Discount factor
                  polyak=0.995,  # Exponential averaging factor for the target critic
-                 alpha=0.2,  # Value of the entropy coefficient
+                 alpha=0.5,  # Value of the entropy coefficient
                  lr_actor=1e-3,  # Learning rate for the actor
                  lr_critic=1e-3):  # Learning rate for the critic
 
@@ -443,19 +435,20 @@ class SACTrainingAgent(TrainingAgent):
         """
         # First, we decompose our batch into its relevant components, ignoring the "truncated" signal:
         o, a, r, o2, d, _ = batch
-
+        print("batch")
         # We sample an action in the current policy and retrieve its corresponding log probability:
 
-        pi, logp_pi = self.model.actor(observation_space=o, action_space=a)
+        pi, logp_pi = self.model.actor.forward(o)
 
         # We also compute our action-value estimates for the current transition:
-        q1 = self.model.q1(o, a)
-        q2 = self.model.q2(o, a)
+        q1 = self.model.q1.forward(o, a)
+        q2 = self.model.q2.forward(o, a)
         # Now we compute our value target, for which we need to detach from gradients computation:
         with torch.no_grad():
-            a2, logp_a2 = self.model.actor(o2, a)
-            q1_pi_targ = self.model_target.q1(o2, a2)
-            q2_pi_targ = self.model_target.q2(o2, a2)
+            a2, logp_a2 = self.model.actor.forward(o2)
+            print(a2)
+            q1_pi_targ = self.model_target.q1.forward(o2, a2)
+            q2_pi_targ = self.model_target.q2.forward(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
             backup = r + self.gamma * \
                 (1 - d) * (q_pi_targ - self.alpha_t * logp_a2)
@@ -477,9 +470,9 @@ class SACTrainingAgent(TrainingAgent):
 
         loss_pi = (self.alpha_t * logp_pi - q_pi).mean()
 
-        self.pi_optimizer.zero_grad()
-        loss_pi.backward()
-        self.pi_optimizer.step()
+        # self.pi_optimizer.zero_grad()
+        # loss_pi.backward()
+        # self.pi_optimizer.step()
 
         for p in self.q_params:
             p.requires_grad = True
@@ -502,7 +495,7 @@ training_agent_cls = partial(SACTrainingAgent,
                              polyak=0.995,
                              alpha=0.02,
                              lr_actor=0.000005,
-                             lr_critic=0.00003)
+                             lr_critic=0.000003)
 
 
 training_cls = partial(
