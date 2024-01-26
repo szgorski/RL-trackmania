@@ -1,3 +1,4 @@
+import numpy as np
 from tmrl.actor import TorchActorModule
 from tmrl.util import prod
 import torch
